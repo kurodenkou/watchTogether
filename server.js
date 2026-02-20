@@ -53,10 +53,18 @@ io.on('connection', (socket) => {
     room.users.set(socket.id, user);
     socket.join(roomId);
 
-    // Send the new user the current room state
+    // Send the new user the current room state.
+    // If the video is playing, estimate the current position by adding the
+    // time elapsed since the last sync event so the new joiner doesn't
+    // restart from a stale timestamp.
+    const videoStateForJoiner = { ...room.videoState };
+    if (videoStateForJoiner.playing && videoStateForJoiner.updatedAt) {
+      const elapsedSeconds = (Date.now() - videoStateForJoiner.updatedAt) / 1000;
+      videoStateForJoiner.currentTime = videoStateForJoiner.currentTime + elapsedSeconds;
+    }
     socket.emit('room-state', {
       users: getRoomUsers(roomId),
-      videoState: room.videoState
+      videoState: videoStateForJoiner
     });
 
     // Notify others that a new user joined
