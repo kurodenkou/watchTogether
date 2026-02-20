@@ -144,8 +144,16 @@ function connectSocket() {
     btnJoin.disabled = false;
     btnJoin.textContent = 'Join Room';
 
-    // Add my own tile first
-    addParticipantTile(myId, myName, localStream, true);
+    // Add my own tile first, then assign the stream after it's in the DOM
+    // (mirrors how remote tiles receive their stream via pc.ontrack)
+    addParticipantTile(myId, myName, null, true);
+    const localTile = getTile(myId);
+    if (localTile && localStream) {
+      const videoEl = localTile.querySelector('video');
+      videoEl.srcObject = localStream;
+      videoEl.play().catch(() => {});
+      updateNoVideoOverlay(localTile, localStream);
+    }
 
     // Connect to existing users (we initiate offers)
     for (const user of users) {
@@ -286,12 +294,7 @@ function addParticipantTile(id, name, stream, isLocal) {
 
   if (isLocal) {
     videoEl.muted = true; // prevent feedback
-    if (stream) {
-      videoEl.srcObject = stream;
-      updateNoVideoOverlay(tile, stream);
-    } else {
-      overlay.classList.add('visible');
-    }
+    overlay.classList.add('visible');
     tile.dataset.local = 'true';
   } else {
     overlay.classList.add('visible'); // show until stream arrives
