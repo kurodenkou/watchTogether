@@ -373,11 +373,11 @@ btnCopyRoom.addEventListener('click', () => {
   if (params.get('room')) inputRoom.value = params.get('room');
 })();
 
-// ── HLS video loading ─────────────────────────────────────────────────────────
+// ── Video loading ─────────────────────────────────────────────────────────────
 btnLoadUrl.addEventListener('click', () => {
   const url = inputHlsUrl.value.trim();
   if (!url) return;
-  loadHls(url, null);
+  loadVideo(url, null);
   // Broadcast URL to room
   socket && socket.emit('video-sync', { roomId, action: 'set-url', url });
 });
@@ -386,36 +386,46 @@ inputHlsUrl.addEventListener('keydown', e => {
   if (e.key === 'Enter') btnLoadUrl.click();
 });
 
-function loadHls(url, initialState) {
-  // Tear down old instance
+function isMp4Url(url) {
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    return path.endsWith('.mp4') || path.endsWith('.m4v');
+  } catch (_) {
+    return url.toLowerCase().includes('.mp4');
+  }
+}
+
+function loadVideo(url, initialState) {
+  // Tear down old HLS instance if any
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
   mainVideo.src       = '';
   mainVideo.style.display = 'block';
   videoPlaceholder.classList.add('hidden');
 
-  if (Hls.isSupported()) {
+  function applyInitialState() {
+    if (initialState) {
+      mainVideo.currentTime = initialState.currentTime || 0;
+      if (initialState.playing) mainVideo.play().catch(() => {});
+    }
+  }
+
+  if (isMp4Url(url)) {
+    // Native MP4 playback – no library needed
+    mainVideo.src = url;
+    mainVideo.addEventListener('loadedmetadata', applyInitialState, { once: true });
+  } else if (Hls.isSupported()) {
     const hls = new Hls({ enableWorker: true });
     hlsInstance = hls;
     hls.loadSource(url);
     hls.attachMedia(mainVideo);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      if (initialState) {
-        mainVideo.currentTime = initialState.currentTime || 0;
-        if (initialState.playing) mainVideo.play().catch(() => {});
-      }
-    });
+    hls.on(Hls.Events.MANIFEST_PARSED, applyInitialState);
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (data.fatal) showToast('HLS error: ' + data.details);
     });
   } else if (mainVideo.canPlayType('application/vnd.apple.mpegurl')) {
     // Native HLS (Safari)
     mainVideo.src = url;
-    mainVideo.addEventListener('loadedmetadata', () => {
-      if (initialState) {
-        mainVideo.currentTime = initialState.currentTime || 0;
-        if (initialState.playing) mainVideo.play().catch(() => {});
-      }
-    }, { once: true });
+    mainVideo.addEventListener('loadedmetadata', applyInitialState, { once: true });
   } else {
     showToast('Your browser does not support HLS playback.');
     return;
@@ -424,6 +434,9 @@ function loadHls(url, initialState) {
   // Bind sync events (once per load)
   attachVideoSyncListeners();
 }
+
+// Keep backward-compatible alias used by room-state handler
+function loadHls(url, initialState) { loadVideo(url, initialState); }
 
 // ── Video sync: outgoing ──────────────────────────────────────────────────────
 let syncDebounceTimer = null;
