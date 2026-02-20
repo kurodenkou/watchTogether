@@ -225,6 +225,7 @@ function createPeerConnection(peerId, isInitiator) {
     const videoEl = tile.querySelector('video');
     if (videoEl.srcObject !== event.streams[0]) {
       videoEl.srcObject = event.streams[0];
+      videoEl.play().catch(() => {});
       updateNoVideoOverlay(tile, event.streams[0]);
     }
   };
@@ -287,6 +288,7 @@ function addParticipantTile(id, name, stream, isLocal) {
     videoEl.muted = true; // prevent feedback
     if (stream) {
       videoEl.srcObject = stream;
+      videoEl.play().catch(() => {});
       updateNoVideoOverlay(tile, stream);
     } else {
       overlay.classList.add('visible');
