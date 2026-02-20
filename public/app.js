@@ -288,7 +288,6 @@ function addParticipantTile(id, name, stream, isLocal) {
     videoEl.muted = true; // prevent feedback
     if (stream) {
       videoEl.srcObject = stream;
-      videoEl.play().catch(() => {});
       updateNoVideoOverlay(tile, stream);
     } else {
       overlay.classList.add('visible');
@@ -299,6 +298,12 @@ function addParticipantTile(id, name, stream, isLocal) {
   }
 
   participantsGrid.appendChild(frag);
+
+  // iOS Safari: play() must be called after the element is in the DOM
+  if (isLocal && stream) {
+    videoEl.play().catch(() => {});
+  }
+
   updateParticipantCount();
 }
 
