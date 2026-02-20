@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WatchTogether</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Join Screen -->
+  <div id="join-screen" class="screen active">
+    <div class="join-card">
+      <h1>WatchTogether</h1>
+      <p class="tagline">Watch videos together, in sync.</p>
+      <div class="form-group">
+        <label for="input-name">Your name</label>
+        <input id="input-name" type="text" placeholder="Enter your name" maxlength="30" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label for="input-room">Room ID</label>
+        <div class="room-row">
+          <input id="input-room" type="text" placeholder="Enter or generate a room ID" maxlength="40" autocomplete="off" />
+          <button id="btn-gen-room" class="btn-secondary" title="Generate random room ID">&#x21ba;</button>
+        </div>
+      </div>
+      <button id="btn-join" class="btn-primary">Join Room</button>
+      <div id="join-error" class="error-msg hidden"></div>
+    </div>
+  </div>
+
+  <!-- Main App Screen -->
+  <div id="app-screen" class="screen">
+    <header class="app-header">
+      <span class="logo">WatchTogether</span>
+      <div class="room-info">
+        Room: <span id="display-room-id"></span>
+        <button id="btn-copy-room" class="btn-icon" title="Copy room link">&#x2398;</button>
+      </div>
+      <div class="header-actions">
+        <button id="btn-toggle-mic" class="btn-icon btn-media active" title="Toggle microphone">&#x1F3A4;</button>
+        <button id="btn-toggle-cam" class="btn-icon btn-media active" title="Toggle camera">&#x1F4F9;</button>
+        <button id="btn-leave" class="btn-icon btn-danger" title="Leave room">&#x2715;</button>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- Video Player -->
+      <section class="player-section">
+        <div class="url-bar">
+          <input id="input-hls-url" type="text" placeholder="Paste HLS stream URL (.m3u8) here..." />
+          <button id="btn-load-url" class="btn-primary">Load</button>
+        </div>
+        <div class="video-wrapper">
+          <video id="main-video" controls playsinline></video>
+          <div id="video-placeholder" class="video-placeholder">
+            <div class="placeholder-inner">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <polygon points="5,3 19,12 5,21" />
+              </svg>
+              <p>Enter an HLS URL above to start watching</p>
+            </div>
+          </div>
+          <div id="sync-indicator" class="sync-indicator hidden">Syncing...</div>
+        </div>
+      </section>
+
+      <!-- Participants Panel -->
+      <aside class="participants-section">
+        <div class="participants-header">
+          <h3>Participants (<span id="participant-count">0</span>)</h3>
+        </div>
+        <div id="participants-grid" class="participants-grid">
+          <!-- Participant tiles injected here -->
+        </div>
+      </aside>
+    </main>
+
+    <!-- Toast notifications -->
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <!-- Templates -->
+  <template id="tmpl-participant">
+    <div class="participant-tile" data-peer-id="">
+      <video autoplay playsinline muted></video>
+      <div class="participant-info">
+        <span class="participant-name"></span>
+        <span class="participant-badges"></span>
+      </div>
+      <div class="no-video-overlay">
+        <div class="avatar-circle"><span class="avatar-initial"></span></div>
+      </div>
+    </div>
+  </template>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
