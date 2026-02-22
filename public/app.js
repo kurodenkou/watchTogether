@@ -107,16 +107,22 @@ function updateOperatorUI() {
   inputHlsUrl.disabled = !isOperator;
   btnLoadUrl.disabled  = !isOperator;
 
-  // Show blocker overlay for participants so they can't interact with the video
-  if (videoBlocker) {
-    videoBlocker.classList.toggle('hidden', isOperator);
-  }
+  updateVideoBlocker();
 
   // Refresh my own tile badge
   if (myId) {
     const myTile = getTile(myId);
     if (myTile) updateTileOperatorBadge(myTile, myId);
   }
+}
+
+// Show the blocker overlay only while a non-operator's video is playing.
+// When the video is paused (e.g. autoplay blocked on iOS, or initial load)
+// the blocker is hidden so the user can press the native play button.
+// Once playing, the blocker is restored to prevent seeking and pausing.
+function updateVideoBlocker() {
+  if (!videoBlocker) return;
+  videoBlocker.classList.toggle('hidden', isOperator || mainVideo.paused);
 }
 
 // Update the star badge on every tile in the grid.
@@ -596,6 +602,9 @@ function loadVideo(url, initialState) {
 
   // Bind sync events (once per load)
   attachVideoSyncListeners();
+  // Video is paused at load time; update blocker state so non-operators
+  // can press play immediately without waiting for a play/pause event.
+  updateVideoBlocker();
 }
 
 // Keep backward-compatible alias used by room-state handler
@@ -607,6 +616,7 @@ let syncDebounceTimer = null;
 function attachVideoSyncListeners() {
   // Only operators broadcast sync events; participants receive them.
   mainVideo.onplay  = () => {
+    updateVideoBlocker(); // restore blocker for non-operators once playing
     if (isSyncing || !isOperator) return;
     socket && socket.emit('video-sync', {
       roomId,
@@ -616,6 +626,7 @@ function attachVideoSyncListeners() {
   };
 
   mainVideo.onpause = () => {
+    updateVideoBlocker(); // reveal controls so non-operators can press play again
     if (isSyncing || !isOperator) return;
     socket && socket.emit('video-sync', {
       roomId,
