@@ -5,11 +5,14 @@
    1. User joins a room via the join screen
    2. App requests webcam + mic via getUserMedia
    3. Socket connects and emits 'join-room'
-   4. Server sends back room-state (existing users + video state)
+   4. Server sends back room-state (existing users + video state + operators)
    5. For each existing user, we initiate a WebRTC offer
    6. When new users join after us, they initiate offers to us
    7. HLS video is loaded via hls.js; play/pause/seek events
       are broadcast to the room and applied on all peers
+   8. Operator role: the first joiner (or a randomly-selected participant
+      when the last operator leaves) controls video playback and URL.
+      Operators can promote any participant to operator via right-click.
 ════════════════════════════════════════════════════════ */
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -30,10 +33,13 @@ const btnLoadUrl        = document.getElementById('btn-load-url');
 const mainVideo         = document.getElementById('main-video');
 const videoPlaceholder  = document.getElementById('video-placeholder');
 const syncIndicator     = document.getElementById('sync-indicator');
+const videoBlocker      = document.getElementById('video-controls-blocker');
 const participantsGrid  = document.getElementById('participants-grid');
 const participantCount  = document.getElementById('participant-count');
 const toastContainer    = document.getElementById('toast-container');
 const tmplParticipant   = document.getElementById('tmpl-participant');
+const contextMenu       = document.getElementById('participant-context-menu');
+const ctxMakeOperator   = document.getElementById('ctx-make-operator');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let socket          = null;
@@ -46,6 +52,10 @@ let isMicOn         = true;
 let isCamOn         = true;
 let isSyncing       = false;       // suppress loopback when applying remote sync
 let syncHideTimer   = null;
+
+// Operator state
+let operators       = new Set();   // set of socket IDs that are operators
+let isOperator      = false;       // whether the local user is an operator
 
 // peerConnections[socketId] = RTCPeerConnection
 const peerConnections = {};
@@ -88,6 +98,65 @@ function showSyncIndicator() {
   syncIndicator.classList.remove('hidden');
   clearTimeout(syncHideTimer);
   syncHideTimer = setTimeout(() => syncIndicator.classList.add('hidden'), 1800);
+}
+
+// ── Operator UI helpers ───────────────────────────────────────────────────────
+
+// Enable/disable URL bar and video controls based on operator status.
+function updateOperatorUI() {
+  inputHlsUrl.disabled = !isOperator;
+  btnLoadUrl.disabled  = !isOperator;
+
+  // Show blocker overlay for participants so they can't interact with the video
+  if (videoBlocker) {
+    videoBlocker.classList.toggle('hidden', isOperator);
+  }
+
+  // Refresh my own tile badge
+  if (myId) {
+    const myTile = getTile(myId);
+    if (myTile) updateTileOperatorBadge(myTile, myId);
+  }
+}
+
+// Update the star badge on every tile in the grid.
+function updateAllOperatorBadges() {
+  participantsGrid.querySelectorAll('.participant-tile').forEach(tile => {
+    updateTileOperatorBadge(tile, tile.dataset.peerId);
+  });
+}
+
+// Add or remove the operator star badge from a single tile.
+function updateTileOperatorBadge(tile, peerId) {
+  const badgesEl = tile.querySelector('.participant-badges');
+  if (!badgesEl) return;
+
+  const existing = badgesEl.querySelector('.badge-operator');
+  if (operators.has(peerId)) {
+    if (!existing) {
+      const badge = document.createElement('span');
+      badge.className = 'badge-operator';
+      badge.title = 'Operator – controls video playback';
+      badge.textContent = '\u2605'; // ★
+      badgesEl.appendChild(badge);
+    }
+  } else {
+    if (existing) existing.remove();
+  }
+}
+
+// Apply a fresh operators list received from the server.
+function applyOperators(opList) {
+  const wasOperator = isOperator;
+  operators = new Set(opList);
+  isOperator = operators.has(myId);
+
+  if (!wasOperator && isOperator) {
+    showToast('You are now an operator. You control video playback.');
+  }
+
+  updateOperatorUI();
+  updateAllOperatorBadges();
 }
 
 // ── Join screen logic ─────────────────────────────────────────────────────────
@@ -136,13 +205,18 @@ function connectSocket() {
     socket.emit('join-room', { roomId, name: myName });
   });
 
-  socket.on('room-state', ({ users, videoState }) => {
+  socket.on('room-state', ({ users, operators: opList, videoState }) => {
     // Switch to app screen
     joinScreen.classList.remove('active');
     appScreen.classList.add('active');
     displayRoomId.textContent = roomId;
     btnJoin.disabled = false;
     btnJoin.textContent = 'Join Room';
+
+    // Apply operator list before rendering tiles so badges appear immediately
+    operators  = new Set(opList);
+    isOperator = operators.has(myId);
+    updateOperatorUI();
 
     // Add my own tile first, then assign the stream after it's in the DOM
     // (mirrors how remote tiles receive their stream via pc.ontrack)
@@ -154,6 +228,7 @@ function connectSocket() {
       videoEl.play().catch(() => {});
       updateNoVideoOverlay(localTile, localStream);
     }
+    if (localTile) updateTileOperatorBadge(localTile, myId);
 
     // Connect to existing users (we initiate offers)
     for (const user of users) {
@@ -170,12 +245,15 @@ function connectSocket() {
     }
   });
 
-  socket.on('user-joined', ({ user }) => {
+  socket.on('user-joined', ({ user, operators: opList }) => {
     if (user.id === myId) return;
     showToast(`${user.name} joined`);
     addParticipantTile(user.id, user.name, null, false);
     // New user will send us an offer; we just wait
     createPeerConnection(user.id, false);
+    // Refresh operator list (the new joiner is never an operator on arrival,
+    // but this keeps the list authoritative)
+    applyOperators(opList);
   });
 
   socket.on('user-left', ({ userId }) => {
@@ -183,6 +261,12 @@ function connectSocket() {
     const name = tile ? tile.querySelector('.participant-name').textContent : 'Someone';
     removePeer(userId);
     showToast(`${name} left`);
+    // operators-changed may follow separately if an operator left
+  });
+
+  // Server broadcasts updated operator list (e.g. after assign or auto-promote)
+  socket.on('operators-changed', ({ operators: opList }) => {
+    applyOperators(opList);
   });
 
   // ── WebRTC signaling ──────────────────────────────────────────────────────
@@ -300,6 +384,16 @@ function addParticipantTile(id, name, stream, isLocal) {
     overlay.classList.add('visible'); // show until stream arrives
   }
 
+  // Apply operator badge before appending so it's immediately visible
+  const badgesEl = tile.querySelector('.participant-badges');
+  if (badgesEl && operators.has(id)) {
+    const badge = document.createElement('span');
+    badge.className = 'badge-operator';
+    badge.title = 'Operator – controls video playback';
+    badge.textContent = '\u2605';
+    badgesEl.appendChild(badge);
+  }
+
   participantsGrid.appendChild(frag);
 
   // iOS Safari: play() must be called after the element is in the DOM
@@ -322,6 +416,44 @@ function updateNoVideoOverlay(tile, stream) {
   } else {
     overlay.classList.add('visible');
   }
+}
+
+// ── Context menu – operator promotes a participant ────────────────────────────
+let contextMenuTargetId = null;
+
+// Show context menu on right-click inside participants grid (only for operators)
+participantsGrid.addEventListener('contextmenu', (e) => {
+  const tile = e.target.closest('.participant-tile');
+  if (!tile) return;
+  if (!isOperator) return; // only operators see the menu
+
+  const peerId = tile.dataset.peerId;
+  if (!peerId || peerId === myId) return; // can't act on self
+  if (operators.has(peerId)) return;      // already an operator
+
+  e.preventDefault();
+  contextMenuTargetId = peerId;
+
+  contextMenu.style.left = `${e.clientX}px`;
+  contextMenu.style.top  = `${e.clientY}px`;
+  contextMenu.classList.remove('hidden');
+});
+
+// Make Operator button in context menu
+ctxMakeOperator.addEventListener('click', () => {
+  if (contextMenuTargetId && socket) {
+    socket.emit('assign-operator', { roomId, targetId: contextMenuTargetId });
+  }
+  hideContextMenu();
+});
+
+// Close context menu on any outside click
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideContextMenu(); });
+
+function hideContextMenu() {
+  contextMenu.classList.add('hidden');
+  contextMenuTargetId = null;
 }
 
 // ── Mic / Camera toggles ──────────────────────────────────────────────────────
@@ -366,6 +498,13 @@ function leaveRoom() {
   participantsGrid.innerHTML = '';
   updateParticipantCount();
 
+  // Reset operator state
+  operators  = new Set();
+  isOperator = false;
+  inputHlsUrl.disabled = false;
+  btnLoadUrl.disabled  = false;
+  if (videoBlocker) videoBlocker.classList.add('hidden');
+
   appScreen.classList.remove('active');
   joinScreen.classList.add('active');
   inputHlsUrl.value = '';
@@ -385,6 +524,7 @@ btnCopyRoom.addEventListener('click', () => {
 
 // ── Video loading ─────────────────────────────────────────────────────────────
 btnLoadUrl.addEventListener('click', () => {
+  if (!isOperator) return; // redundant guard; button is disabled for non-operators
   const url = inputHlsUrl.value.trim();
   if (!url) return;
   loadVideo(url, null);
@@ -452,9 +592,9 @@ function loadHls(url, initialState) { loadVideo(url, initialState); }
 let syncDebounceTimer = null;
 
 function attachVideoSyncListeners() {
-  // Remove old listeners by cloning – simpler approach: use named functions + flag
+  // Only operators broadcast sync events; participants receive them.
   mainVideo.onplay  = () => {
-    if (isSyncing) return;
+    if (isSyncing || !isOperator) return;
     socket && socket.emit('video-sync', {
       roomId,
       action: 'play',
@@ -463,7 +603,7 @@ function attachVideoSyncListeners() {
   };
 
   mainVideo.onpause = () => {
-    if (isSyncing) return;
+    if (isSyncing || !isOperator) return;
     socket && socket.emit('video-sync', {
       roomId,
       action: 'pause',
@@ -472,7 +612,7 @@ function attachVideoSyncListeners() {
   };
 
   mainVideo.onseeked = () => {
-    if (isSyncing) return;
+    if (isSyncing || !isOperator) return;
     clearTimeout(syncDebounceTimer);
     syncDebounceTimer = setTimeout(() => {
       socket && socket.emit('video-sync', {

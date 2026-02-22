@@ -14,13 +14,18 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// rooms[roomId] = { users: Map<socketId, { id, name }>, videoState: { url, playing, currentTime, updatedAt } }
+// rooms[roomId] = {
+//   users:     Map<socketId, { id, name }>,
+//   operators: Set<socketId>,          ← NEW: set of operator socket IDs
+//   videoState: { url, playing, currentTime, updatedAt }
+// }
 const rooms = {};
 
 function getRoom(roomId) {
   if (!rooms[roomId]) {
     rooms[roomId] = {
       users: new Map(),
+      operators: new Set(),
       videoState: {
         url: '',
         playing: false,
@@ -51,6 +56,13 @@ io.on('connection', (socket) => {
 
     const user = { id: socket.id, name };
     room.users.set(socket.id, user);
+
+    // First person into the room becomes operator automatically.
+    // Subsequent joiners are plain participants until promoted.
+    if (room.users.size === 1) {
+      room.operators.add(socket.id);
+    }
+
     socket.join(roomId);
 
     // Send the new user the current room state.
@@ -64,13 +76,17 @@ io.on('connection', (socket) => {
     }
     socket.emit('room-state', {
       users: getRoomUsers(roomId),
+      operators: Array.from(room.operators),
       videoState: videoStateForJoiner
     });
 
-    // Notify others that a new user joined
-    socket.to(roomId).emit('user-joined', { user });
+    // Notify others that a new user joined (include current operator list)
+    socket.to(roomId).emit('user-joined', {
+      user,
+      operators: Array.from(room.operators)
+    });
 
-    console.log(`[join] ${name} (${socket.id}) -> room ${roomId}`);
+    console.log(`[join] ${name} (${socket.id}) -> room ${roomId} [operator: ${room.operators.has(socket.id)}]`);
   });
 
   // WebRTC signaling: offer
@@ -98,10 +114,14 @@ io.on('connection', (socket) => {
   });
 
   // Video state sync: play, pause, seek, url change
+  // Only operators are permitted to send these events.
   socket.on('video-sync', ({ roomId, action, currentTime, url }) => {
     if (!roomId || !rooms[roomId]) return;
 
     const room = rooms[roomId];
+
+    // Reject sync commands from non-operators
+    if (!room.operators.has(socket.id)) return;
 
     // Update server-side video state
     if (action === 'set-url') {
@@ -128,12 +148,33 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Operator assigns another participant as operator.
+  // Only existing operators may promote others.
+  socket.on('assign-operator', ({ roomId, targetId }) => {
+    if (!roomId || !rooms[roomId]) return;
+
+    const room = rooms[roomId];
+
+    if (!room.operators.has(socket.id)) return;       // caller must be operator
+    if (!room.users.has(targetId)) return;             // target must be in room
+
+    room.operators.add(targetId);
+    console.log(`[operator] ${targetId} promoted by ${socket.id} in room ${roomId}`);
+
+    io.to(roomId).emit('operators-changed', {
+      operators: Array.from(room.operators)
+    });
+  });
+
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`[disconnect] ${socket.id}`);
     if (currentRoom && rooms[currentRoom]) {
       const room = rooms[currentRoom];
+      const wasOperator = room.operators.has(socket.id);
+
       room.users.delete(socket.id);
+      room.operators.delete(socket.id);
 
       io.to(currentRoom).emit('user-left', { userId: socket.id });
 
@@ -141,6 +182,16 @@ io.on('connection', (socket) => {
       if (room.users.size === 0) {
         delete rooms[currentRoom];
         console.log(`[room-cleanup] ${currentRoom}`);
+      } else if (wasOperator && room.operators.size === 0) {
+        // Operator left and no operators remain – pick a random participant
+        const remaining = Array.from(room.users.keys());
+        const newOp = remaining[Math.floor(Math.random() * remaining.length)];
+        room.operators.add(newOp);
+        console.log(`[operator] ${newOp} auto-promoted in room ${currentRoom}`);
+
+        io.to(currentRoom).emit('operators-changed', {
+          operators: Array.from(room.operators)
+        });
       }
     }
   });

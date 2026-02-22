@@ -62,6 +62,10 @@
             </div>
           </div>
           <div id="sync-indicator" class="sync-indicator hidden">Syncing...</div>
+          <!-- Blocks video interaction for non-operators; hidden for operators -->
+          <div id="video-controls-blocker" class="video-controls-blocker hidden">
+            <span class="blocker-label">Operators control playback</span>
+          </div>
         </div>
       </section>
 
@@ -78,6 +82,11 @@
 
     <!-- Toast notifications -->
     <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <!-- Context menu for operator actions (shown on right-click on a participant tile) -->
+  <div id="participant-context-menu" class="context-menu hidden">
+    <button id="ctx-make-operator" class="context-menu-item">&#x2605; Make Operator</button>
   </div>
 
   <!-- Templates -->
