@@ -179,14 +179,19 @@ async function startSession() {
   btnJoin.disabled = true;
   btnJoin.textContent = 'Connecting…';
 
-  // Request media
+  // Request media – fall back to audio-only if camera is unavailable
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   } catch (err) {
-    // Graceful degradation – continue without media
-    console.warn('getUserMedia failed:', err);
-    showToast('Camera/mic unavailable – joining without video.');
-    localStream = null;
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      showToast('Camera unavailable – joining with audio only.');
+    } catch (err2) {
+      // Graceful degradation – continue without any media
+      console.warn('getUserMedia failed:', err2);
+      showToast('Camera/mic unavailable – joining without media.');
+      localStream = null;
+    }
   }
 
   myName = name;
@@ -317,6 +322,7 @@ function createPeerConnection(peerId, isInitiator) {
     const videoEl = tile.querySelector('video');
     if (videoEl.srcObject !== event.streams[0]) {
       videoEl.srcObject = event.streams[0];
+      videoEl.muted = false; // template sets muted for autoplay; unmute for remote peers
       videoEl.play().catch(() => {});
       updateNoVideoOverlay(tile, event.streams[0]);
     }
@@ -555,7 +561,14 @@ function loadVideo(url, initialState) {
   function applyInitialState() {
     if (initialState) {
       mainVideo.currentTime = initialState.currentTime || 0;
-      if (initialState.playing) mainVideo.play().catch(() => {});
+      if (initialState.playing) {
+        mainVideo.play().catch(err => {
+          // iOS Safari blocks autoplay without a direct user gesture; tell the user
+          if (err.name === 'NotAllowedError') {
+            showToast('Tap the video to start playback.');
+          }
+        });
+      }
     }
   }
 
@@ -646,7 +659,12 @@ function handleRemoteSync(action, currentTime, url) {
       const drift = Math.abs(mainVideo.currentTime - currentTime);
       if (drift > 1) mainVideo.currentTime = currentTime;
     }
-    mainVideo.play().catch(() => {}).finally(() => { isSyncing = false; });
+    mainVideo.play().catch(err => {
+      // iOS Safari blocks autoplay without a direct user gesture; tell the user
+      if (err.name === 'NotAllowedError') {
+        showToast('Tap the video to start playback.');
+      }
+    }).finally(() => { isSyncing = false; });
     return;
   }
 
