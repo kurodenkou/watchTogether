@@ -702,19 +702,22 @@ async function startFileUpload(file) {
     totalChunks
   });
 
-  // 3. Send chunks sequentially over Socket.io.
-  for (let i = 0; i < totalChunks; i++) {
-    const slice  = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    const buffer = await slice.arrayBuffer();
-    socket.emit('video-chunk', { uploadId, index: i, data: buffer });
-
-    const pct = (i + 1) / totalChunks;
-    showUploadProgress(
-      `Sending "${file.name}"… ${Math.round(pct * 100)}%`,
-      pct
-    );
-    // Yield every 20 chunks so the UI stays responsive.
-    if (i % 20 === 19) await new Promise(r => setTimeout(r, 0));
+  // 3. Send chunks in windows and wait for the server's ack before advancing.
+  //    This bounds the Socket.io send buffer to SEND_WINDOW * CHUNK_SIZE and
+  //    prevents the connection from being dropped under load.
+  const SEND_WINDOW = 6;
+  for (let i = 0; i < totalChunks; i += SEND_WINDOW) {
+    const end = Math.min(i + SEND_WINDOW, totalChunks);
+    const ackPromises = [];
+    for (let j = i; j < end; j++) {
+      const slice  = file.slice(j * CHUNK_SIZE, (j + 1) * CHUNK_SIZE);
+      const buffer = await slice.arrayBuffer();
+      ackPromises.push(new Promise(resolve => {
+        socket.emit('video-chunk', { uploadId, index: j, data: buffer }, resolve);
+      }));
+    }
+    await Promise.all(ackPromises);
+    showUploadProgress(`Sending "${file.name}"… ${Math.round((end / totalChunks) * 100)}%`, end / totalChunks);
   }
 
   showUploadProgress('Waiting for all participants to receive the file…', 1);

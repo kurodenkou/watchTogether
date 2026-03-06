@@ -205,10 +205,11 @@ io.on('connection', (socket) => {
   });
 
   // Relay a raw binary chunk from the operator to every other client.
-  socket.on('video-chunk', ({ uploadId, index, data }) => {
-    if (!currentRoom || !rooms[currentRoom]) return;
-    if (!rooms[currentRoom].operators.has(socket.id)) return;
+  socket.on('video-chunk', ({ uploadId, index, data }, ack) => {
+    if (!currentRoom || !rooms[currentRoom]) { if (ack) ack(); return; }
+    if (!rooms[currentRoom].operators.has(socket.id)) { if (ack) ack(); return; }
     socket.to(currentRoom).emit('video-chunk', { uploadId, index, data });
+    if (ack) ack(); // signal operator the chunk was accepted, safe to send next
   });
 
   // A client signals it has fully received and stored the video in its PouchDB.
