@@ -40,6 +40,12 @@ const toastContainer    = document.getElementById('toast-container');
 const tmplParticipant   = document.getElementById('tmpl-participant');
 const contextMenu       = document.getElementById('participant-context-menu');
 const ctxMakeOperator   = document.getElementById('ctx-make-operator');
+const btnUploadFile     = document.getElementById('btn-upload-file');
+const inputVideoFile    = document.getElementById('input-video-file');
+const uploadProgress    = document.getElementById('upload-progress');
+const uploadProgressFill  = document.getElementById('upload-progress-fill');
+const uploadProgressLabel = document.getElementById('upload-progress-label');
+const uploadProgressPct   = document.getElementById('upload-progress-pct');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let socket          = null;
@@ -59,6 +65,15 @@ let isOperator      = false;       // whether the local user is an operator
 
 // peerConnections[socketId] = RTCPeerConnection
 const peerConnections = {};
+
+// ── PouchDB – local video storage (backed by IndexedDB) ───────────────────────
+const videoDB = new PouchDB('watchtogether-videos');
+
+// ── Video upload state ─────────────────────────────────────────────────────────
+const CHUNK_SIZE = 256 * 1024;   // 256 KB per chunk
+let pendingReceive = {};          // uploadId → { chunks[], totalChunks, received, mimeType, filename }
+let localVideoObjectUrl = null;   // current blob URL for locally-stored video
+let currentUploadId = null;       // uploadId of the currently loaded local video
 
 // ICE servers – using public STUN (Google)
 const ICE_SERVERS = {
@@ -104,8 +119,9 @@ function showSyncIndicator() {
 
 // Enable/disable URL bar and video controls based on operator status.
 function updateOperatorUI() {
-  inputHlsUrl.disabled = !isOperator;
-  btnLoadUrl.disabled  = !isOperator;
+  inputHlsUrl.disabled    = !isOperator;
+  btnLoadUrl.disabled     = !isOperator;
+  btnUploadFile.disabled  = !isOperator;
 
   updateVideoBlocker();
 
@@ -251,8 +267,16 @@ function connectSocket() {
 
     // Apply existing video state
     if (videoState.url) {
-      inputHlsUrl.value = videoState.url;
-      loadHls(videoState.url, videoState);
+      if (videoState.url.startsWith('local://')) {
+        const uploadId = videoState.url.slice(8);
+        inputHlsUrl.value = '[Local file]';
+        videoDB.getAttachment(uploadId, 'video')
+          .then(blob => loadVideoFromBlob(blob, uploadId, videoState))
+          .catch(() => showToast('Local video not available – ask the host to re-upload the file.'));
+      } else {
+        inputHlsUrl.value = videoState.url;
+        loadHls(videoState.url, videoState);
+      }
     }
   });
 
@@ -304,6 +328,75 @@ function connectSocket() {
   // ── Video sync ────────────────────────────────────────────────────────────
   socket.on('video-sync', ({ action, currentTime, url }) => {
     handleRemoteSync(action, currentTime, url);
+  });
+
+  // ── Video file upload: receiving side ─────────────────────────────────────
+  socket.on('video-upload-announce', ({ uploadId, filename, mimeType, totalChunks }) => {
+    // Clear any previous in-flight receive
+    pendingReceive = {};
+    pendingReceive[uploadId] = {
+      chunks: new Array(totalChunks),
+      totalChunks,
+      received: 0,
+      mimeType,
+      filename
+    };
+    showUploadProgress(`Receiving "${filename}"…`, 0);
+  });
+
+  socket.on('video-chunk', async ({ uploadId, index, data }) => {
+    const state = pendingReceive[uploadId];
+    if (!state) return;
+
+    // Socket.io may deliver binary as ArrayBuffer or Uint8Array depending on transport.
+    state.chunks[index] = data instanceof ArrayBuffer ? data : data.buffer;
+    state.received++;
+
+    const pct = state.received / state.totalChunks;
+    showUploadProgress(`Receiving "${state.filename}"… ${Math.round(pct * 100)}%`, pct);
+
+    if (state.received === state.totalChunks) {
+      showUploadProgress(`Saving "${state.filename}" to local storage…`, 1);
+      const blob = new Blob(state.chunks, { type: state.mimeType });
+      delete pendingReceive[uploadId];
+
+      try {
+        await videoDB.put({
+          _id: uploadId,
+          _attachments: { video: { content_type: state.mimeType, data: blob } },
+          filename: state.filename,
+          mimeType: state.mimeType,
+          size: blob.size
+        });
+      } catch (err) {
+        showToast('Failed to save video locally: ' + err.message);
+        hideUploadProgress();
+        return;
+      }
+
+      currentUploadId = uploadId;
+      socket.emit('video-client-ready', { uploadId });
+    }
+  });
+
+  // Fired by the server once every client in the room has confirmed receipt.
+  socket.on('video-all-ready', async ({ uploadId }) => {
+    hideUploadProgress();
+    try {
+      const blob = await videoDB.getAttachment(uploadId, 'video');
+      loadVideoFromBlob(blob, uploadId);
+
+      if (isOperator) {
+        showToast('All participants have the video – press play to start!');
+        // Persist a local:// URL in the room's video state so late joiners
+        // know to load from their own PouchDB store.
+        socket.emit('video-sync', { roomId, action: 'set-url', url: `local://${uploadId}` });
+      } else {
+        showToast('Video ready – waiting for operator to start playback.');
+      }
+    } catch (err) {
+      showToast('Failed to load video from local storage: ' + err.message);
+    }
   });
 
   socket.on('disconnect', () => {
@@ -503,6 +596,10 @@ function leaveRoom() {
     localStream = null;
   }
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+  if (localVideoObjectUrl) { URL.revokeObjectURL(localVideoObjectUrl); localVideoObjectUrl = null; }
+  pendingReceive  = {};
+  currentUploadId = null;
+  hideUploadProgress();
   mainVideo.style.display = 'none';
   mainVideo.srcObject = null;
   mainVideo.src       = '';
@@ -547,6 +644,92 @@ btnLoadUrl.addEventListener('click', () => {
 inputHlsUrl.addEventListener('keydown', e => {
   if (e.key === 'Enter') btnLoadUrl.click();
 });
+
+// ── Local file upload ─────────────────────────────────────────────────────────
+btnUploadFile.addEventListener('click', () => {
+  if (!isOperator) return;
+  inputVideoFile.value = '';   // allow re-selecting the same file
+  inputVideoFile.click();
+});
+
+inputVideoFile.addEventListener('change', async () => {
+  const file = inputVideoFile.files[0];
+  if (!file) return;
+  await startFileUpload(file);
+});
+
+async function startFileUpload(file) {
+  if (!socket || !isOperator) return;
+
+  if (file.size > 500 * 1024 * 1024) {
+    const confirmed = confirm(
+      `This file is ${Math.round(file.size / 1024 / 1024)} MB.\n` +
+      'Very large files may hit browser storage limits.\nContinue?'
+    );
+    if (!confirmed) return;
+  }
+
+  const uploadId = typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+  // 1. Store the full file in local PouchDB before sending.
+  showUploadProgress(`Saving "${file.name}" to local storage…`, 0);
+  try {
+    await videoDB.put({
+      _id: uploadId,
+      _attachments: { video: { content_type: file.type || 'video/mp4', data: file } },
+      filename: file.name,
+      mimeType: file.type || 'video/mp4',
+      size: file.size
+    });
+  } catch (err) {
+    showToast('Failed to save video locally: ' + err.message);
+    hideUploadProgress();
+    return;
+  }
+
+  currentUploadId = uploadId;
+
+  // 2. Announce the upload to the room.
+  socket.emit('video-upload-announce', {
+    uploadId,
+    filename: file.name,
+    mimeType: file.type || 'video/mp4',
+    size: file.size,
+    totalChunks
+  });
+
+  // 3. Send chunks sequentially over Socket.io.
+  for (let i = 0; i < totalChunks; i++) {
+    const slice  = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+    const buffer = await slice.arrayBuffer();
+    socket.emit('video-chunk', { uploadId, index: i, data: buffer });
+
+    const pct = (i + 1) / totalChunks;
+    showUploadProgress(
+      `Sending "${file.name}"… ${Math.round(pct * 100)}%`,
+      pct
+    );
+    // Yield every 20 chunks so the UI stays responsive.
+    if (i % 20 === 19) await new Promise(r => setTimeout(r, 0));
+  }
+
+  showUploadProgress('Waiting for all participants to receive the file…', 1);
+}
+
+function showUploadProgress(label, pct) {
+  uploadProgress.classList.remove('hidden');
+  uploadProgressLabel.textContent = label;
+  uploadProgressFill.style.width  = `${Math.round(pct * 100)}%`;
+  uploadProgressPct.textContent   = `${Math.round(pct * 100)}%`;
+}
+
+function hideUploadProgress() {
+  uploadProgress.classList.add('hidden');
+}
 
 function isMp4Url(url) {
   try {
@@ -610,6 +793,38 @@ function loadVideo(url, initialState) {
 // Keep backward-compatible alias used by room-state handler
 function loadHls(url, initialState) { loadVideo(url, initialState); }
 
+// Load a video from a Blob (retrieved from PouchDB) via an object URL.
+function loadVideoFromBlob(blob, uploadId, initialState = null) {
+  if (localVideoObjectUrl) {
+    URL.revokeObjectURL(localVideoObjectUrl);
+    localVideoObjectUrl = null;
+  }
+
+  if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+
+  const objectUrl = URL.createObjectURL(blob);
+  localVideoObjectUrl = objectUrl;
+  currentUploadId     = uploadId;
+
+  mainVideo.src = objectUrl;
+  mainVideo.style.display = 'block';
+  videoPlaceholder.classList.add('hidden');
+
+  if (initialState) {
+    mainVideo.addEventListener('loadedmetadata', () => {
+      mainVideo.currentTime = initialState.currentTime || 0;
+      if (initialState.playing) {
+        mainVideo.play().catch(err => {
+          if (err.name === 'NotAllowedError') showToast('Tap the video to start playback.');
+        });
+      }
+    }, { once: true });
+  }
+
+  attachVideoSyncListeners();
+  updateVideoBlocker();
+}
+
 // ── Video sync: outgoing ──────────────────────────────────────────────────────
 let syncDebounceTimer = null;
 
@@ -653,6 +868,16 @@ function handleRemoteSync(action, currentTime, url) {
   showSyncIndicator();
 
   if (action === 'set-url') {
+    if (url && url.startsWith('local://')) {
+      const uploadId = url.slice(8);
+      // Skip if we already loaded this video via video-all-ready.
+      if (currentUploadId === uploadId) return;
+      inputHlsUrl.value = '[Local file]';
+      videoDB.getAttachment(uploadId, 'video')
+        .then(blob => loadVideoFromBlob(blob, uploadId))
+        .catch(() => showToast('Local video not available – ask the host to re-upload the file.'));
+      return;
+    }
     inputHlsUrl.value = url;
     loadHls(url, null);
     return;
