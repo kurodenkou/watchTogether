@@ -48,8 +48,17 @@
       <!-- Video Player -->
       <section class="player-section">
         <div class="url-bar">
-          <input id="input-hls-url" type="text" placeholder="Paste video URL (.m3u8 or .mp4) here..." />
+          <input id="input-hls-url" type="text" placeholder="Paste video URL (.m3u8 or .mp4) or upload a local file…" />
           <button id="btn-load-url" class="btn-primary">Load</button>
+          <button id="btn-upload-file" class="btn-secondary" title="Upload a local video file and share it with everyone in the room">&#128193; Upload</button>
+          <input id="input-video-file" type="file" accept="video/*" hidden />
+        </div>
+        <div id="upload-progress" class="upload-progress hidden">
+          <span id="upload-progress-label">Uploading…</span>
+          <div class="upload-progress-track">
+            <div id="upload-progress-fill" class="upload-progress-fill"></div>
+          </div>
+          <span id="upload-progress-pct">0%</span>
         </div>
         <div class="video-wrapper">
           <video id="main-video" controls playsinline></video>
@@ -105,6 +114,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pouchdb@9.0.0/dist/pouchdb.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

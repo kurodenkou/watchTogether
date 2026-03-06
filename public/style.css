@@ -435,6 +435,54 @@ input[type="text"]::placeholder { color: var(--muted); }
   cursor: not-allowed;
 }
 
+/* ── Upload progress bar ──────────────────────────────────── */
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .82rem;
+  color: var(--muted);
+}
+
+#upload-progress-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.upload-progress-track {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  min-width: 60px;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width .25s ease;
+  width: 0%;
+}
+
+#upload-progress-pct {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 34px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.url-bar .btn-secondary { margin-top: 0; }
+
 /* ── Video controls blocker (participant view) ────────────── */
 .video-controls-blocker {
   position: absolute;

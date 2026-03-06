@@ -9,7 +9,8 @@ const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST']
-  }
+  },
+  maxHttpBufferSize: 4e6  // 4 MB – comfortable headroom for 256 KB binary video chunks
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -41,6 +42,18 @@ function getRoomUsers(roomId) {
   const room = rooms[roomId];
   if (!room) return [];
   return Array.from(room.users.values());
+}
+
+// Fire 'video-all-ready' once every client in the room has confirmed receipt.
+function checkAllReady(roomId, uploadId) {
+  const room = rooms[roomId];
+  if (!room || !room.pendingUpload || room.pendingUpload.uploadId !== uploadId) return;
+  const clientIds = Array.from(room.users.keys());
+  if (clientIds.every(id => room.pendingUpload.readyClients.has(id))) {
+    io.to(roomId).emit('video-all-ready', { uploadId });
+    room.pendingUpload = null;
+    console.log(`[upload] ${uploadId} confirmed ready for all clients in ${roomId}`);
+  }
 }
 
 io.on('connection', (socket) => {
@@ -164,6 +177,48 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('operators-changed', {
       operators: Array.from(room.operators)
     });
+  });
+
+  // ── Video file upload relay ──────────────────────────────────────────────────
+
+  // Operator announces a new local-file upload to the room.
+  socket.on('video-upload-announce', ({ uploadId, filename, mimeType, size, totalChunks }) => {
+    if (!currentRoom || !rooms[currentRoom]) return;
+    const room = rooms[currentRoom];
+    if (!room.operators.has(socket.id)) return;
+
+    room.pendingUpload = {
+      uploadId,
+      filename,
+      mimeType,
+      size,
+      totalChunks,
+      uploaderId: socket.id,
+      readyClients: new Set([socket.id]) // uploader already has the file
+    };
+
+    socket.to(currentRoom).emit('video-upload-announce', { uploadId, filename, mimeType, size, totalChunks });
+    console.log(`[upload] "${filename}" (${Math.round(size / 1024)} KB, ${totalChunks} chunks) in room ${currentRoom}`);
+
+    // Handle single-client room: operator is the only user – fire ready immediately.
+    checkAllReady(currentRoom, uploadId);
+  });
+
+  // Relay a raw binary chunk from the operator to every other client.
+  socket.on('video-chunk', ({ uploadId, index, data }) => {
+    if (!currentRoom || !rooms[currentRoom]) return;
+    if (!rooms[currentRoom].operators.has(socket.id)) return;
+    socket.to(currentRoom).emit('video-chunk', { uploadId, index, data });
+  });
+
+  // A client signals it has fully received and stored the video in its PouchDB.
+  socket.on('video-client-ready', ({ uploadId }) => {
+    if (!currentRoom || !rooms[currentRoom]) return;
+    const room = rooms[currentRoom];
+    if (!room.pendingUpload || room.pendingUpload.uploadId !== uploadId) return;
+    room.pendingUpload.readyClients.add(socket.id);
+    console.log(`[upload] client ${socket.id} ready for "${uploadId}" in ${currentRoom}`);
+    checkAllReady(currentRoom, uploadId);
   });
 
   // Handle disconnect
