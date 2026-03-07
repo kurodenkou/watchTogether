@@ -85,7 +85,24 @@ const ICE_SERVERS = {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function randomRoomId() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
+  const words = [
+    'apple','arrow','beach','bear','bird','blade','bloom','blue','brave','brook',
+    'calm','cave','cedar','chest','cliff','cloud','coral','crane','creek','crown',
+    'dawn','deer','delta','dew','drift','drum','dusk','dust','eagle','echo',
+    'ember','fern','field','fire','flame','flash','fleet','flint','flow','foam',
+    'fog','forest','fox','frost','gale','gem','glade','glen','gold','grass',
+    'grove','gulf','hawk','haze','hill','horn','ice','iron','isle','ivy',
+    'jade','jet','lake','lamp','lark','leaf','light','lime','lion','log',
+    'mast','mead','mist','moon','moss','moth','mound','mud','mule','nest',
+    'night','oak','opal','otter','owl','peak','pine','pond','pool','port',
+    'rain','reed','reef','ridge','rift','ring','rise','river','robin','rock',
+    'root','rose','rush','sage','sand','seal','shade','shore','silk','sky',
+    'slate','snow','spark','spring','star','stem','stone','storm','stream','sun',
+    'swan','swift','thorn','tide','tiger','timber','trail','tree','vale','vine',
+    'wave','wind','wolf','wood','wren'
+  ];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  return `${pick()}-${pick()}`;
 }
 
 function showToast(msg, duration = 3000) {
